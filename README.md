@@ -6,8 +6,8 @@ Media Store with a wide range of  aspect ratio.
 
 ## Features
 
-- **Real-Time Face Detection**: Uses ML Kit to detect faces and provides visual feedback (green
-  border and text) when a face is centered in the frame. [There is some issues]
+- **Real-Time Face Detection**: Uses ML Kit to detect faces and provides visual feedback (red
+  border and text) when a face is centered in the frame. [There are some minor alignment issues]
 - **Camera Switching**: Toggle between front and back cameras with a single button.
 - **Blink Effect**: Displays a brief white overlay when capturing a photo for visual feedback.
 - **Image Capture**: Saves photos to the Media Store (`Pictures/CameraApp`) with a 3:2, 4:3, 16:9

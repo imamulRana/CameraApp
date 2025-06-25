@@ -2,7 +2,6 @@ package com.imamul.cameraapp.ui
 
 import android.Manifest
 import android.os.Build
-import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -17,8 +16,8 @@ import androidx.camera.core.Preview
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.mlkit.vision.MlKitAnalyzer
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -34,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -41,16 +41,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Color.Companion.Black
 import androidx.compose.ui.graphics.Color.Companion.Green
 import androidx.compose.ui.graphics.Color.Companion.Transparent
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
 import com.imamul.cameraapp.ui.components.CameraBottomSection
@@ -62,6 +66,7 @@ import com.imamul.cameraapp.utils.rememberLauncherForPermission
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
+import kotlin.math.min
 
 @Composable
 fun ScreenCamera(modifier: Modifier = Modifier) {
@@ -78,6 +83,7 @@ fun ScreenCamera(modifier: Modifier = Modifier) {
     var previewHeight by remember { mutableIntStateOf(0) }
     var cropSelection by remember { mutableStateOf(false) }
     val mediaPick = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { }
+    val faceBoundingBoxes = remember { mutableStateListOf<Rect>() }
 
 
     //camera state
@@ -99,6 +105,8 @@ fun ScreenCamera(modifier: Modifier = Modifier) {
         )
     }
     val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
+    val previewView = remember { PreviewView(context) }
+
 
     val resolutionSelector = remember(cropButtonIndex) {
         ResolutionSelector.Builder().apply {
@@ -145,24 +153,46 @@ fun ScreenCamera(modifier: Modifier = Modifier) {
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also {
-                it.setAnalyzer(
-                    executor, MlKitAnalyzer(
-                        listOf(faceDetector),
-                        ImageAnalysis.COORDINATE_SYSTEM_VIEW_REFERENCED,
-                        ContextCompat.getMainExecutor(context)
-                    ) { result ->
-                        val faces = result.getValue(faceDetector)
-                        if (faces != null) {
-                            alignmentState = faces.any { face ->
-                                val bounds = face.boundingBox
-                                val centerX = bounds.centerX()
-                                val centerY = bounds.centerY()
-                                centerX > previewWidth / 4 && centerX < previewWidth * 3 / 4 &&
-                                        centerY > previewHeight / 4 && centerY < previewHeight * 3 / 4
+                it.setAnalyzer(executor) { imageProxy ->
+                    val mediaImage = imageProxy.image
+                    if (mediaImage != null) {
+                        val image = InputImage.fromMediaImage(
+                            mediaImage,
+                            imageProxy.imageInfo.rotationDegrees
+                        )
+                        faceDetector.process(image)
+                            .addOnSuccessListener { faces ->
+                                faceBoundingBoxes.clear()
+                                // Calculate scaling factors
+                                val imageWidth = imageProxy.width
+                                val imageHeight = imageProxy.height
+                                val previewWidth = previewView.width.toFloat()
+                                val previewHeight = previewView.height.toFloat()
+                                val scale =
+                                    min(previewWidth / imageWidth, previewHeight / imageHeight)
+                                val offsetX = (previewWidth - imageWidth * scale) / 2
+                                val offsetY = (previewHeight - imageHeight * scale) / 2
+
+                                // Handle front camera mirroring
+                                for (face in faces) {
+                                    val bounds = face.boundingBox
+                                    // Scale and translate coordinates
+                                    var left = bounds.left.toFloat() * scale + offsetX
+                                    var right = bounds.right.toFloat() * scale + offsetX
+                                    val top = bounds.top.toFloat() * scale + offsetY
+                                    val bottom = bounds.bottom.toFloat() * scale + offsetY
+
+                                    faceBoundingBoxes.add(Rect(left, top, right, bottom))
+                                }
+                                imageProxy.close()
                             }
-                        }
-                        Log.d("FaceDetection", "Faces detected: ${faces?.size ?: 0}")
-                    })
+                            .addOnFailureListener {
+                                imageProxy.close()
+                            }
+                    } else {
+                        imageProxy.close()
+                    }
+                }
             }
     }
 
@@ -201,15 +231,9 @@ fun ScreenCamera(modifier: Modifier = Modifier) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .border(
-                width = if (alignmentState) 4.dp else 0.dp,
-                color = if (alignmentState) Green else Transparent
-            )
     ) {
-
         AndroidView(
             factory = { context ->
-                val previewView = PreviewView(context)
                 cameraProviderFuture.addListener({
                     val cameraProvider = cameraProviderFuture.get()
                     val preview = Preview.Builder().build().also {
@@ -263,6 +287,16 @@ fun ScreenCamera(modifier: Modifier = Modifier) {
                 }
             }
         )
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            faceBoundingBoxes.forEach { rect ->
+                drawOval(
+                    color = Color.Red,
+                    topLeft = rect.topLeft,
+                    size = rect.size,
+                    style = Stroke(width = 4f)
+                )
+            }
+        }
         if (cropSelection) {
             CameraCropSection(
                 modifier = Modifier
